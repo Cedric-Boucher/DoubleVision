@@ -235,7 +235,7 @@
 	.upload-box { border: 2px dashed #ccc; padding: 20px; border-radius: 8px; flex: 1; min-width: 250px;}
 	.settings { display: flex; justify-content: center; gap: 30px; margin: 20px 0; align-items: center; flex-wrap: wrap; background: #f8f9fa; padding: 15px; border-radius: 8px; }
 	.toggle, .slider { display: flex; align-items: center; gap: 10px; font-weight: 500;}
-	canvas { max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 4px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+	canvas { max-width: 100%; max-height: 80vh; object-fit: contain; border: 1px solid #ddd; border-radius: 4px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
 	button { padding: 10px 20px; font-size: 16px; font-weight: bold; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 4px; transition: 0.2s;}
 	button:hover:not(:disabled) { background: #0056b3; }
 	button:disabled { background: #ccc; cursor: not-allowed; }
