@@ -183,7 +183,7 @@
 			}
 
 			const link = document.createElement('a');
-			link.download = `DoubleVision-WebP-${Date.now()}.webp`;
+			link.download = `DoubleVision-${Date.now()}.webp`;
 			link.href = URL.createObjectURL(blob);
 			link.click();
 
