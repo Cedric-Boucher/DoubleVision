@@ -1,27 +1,111 @@
-<script>
-	// Svelte 5 Runes for state management
-	let leftImage = $state(null);
-	let rightImage = $state(null);
-	let canvas = $state(null);
+<script lang="ts">
+	// 1. Explicit TypeScript interfaces
+	interface ProcessedImage {
+		bitmap: ImageBitmap;
+		orientation: number;
+		actualWidth: number;  // The width after orientation is applied
+		actualHeight: number; // The height after orientation is applied
+	}
 
-	// New user toggles and settings
-	let isSwapped = $state(false);
-	let quality = $state(100);
-	let isGenerating = $state(false);
+	// 2. Svelte 5 Runes with explicit generic types
+	let leftImage = $state<ProcessedImage | null>(null);
+	let rightImage = $state<ProcessedImage | null>(null);
+	let canvas = $state<HTMLCanvasElement | null>(null);
 
-	// Load the image files
-	async function handleImageUpload(event, side) {
-		const file = event.target.files[0];
+	let isSwapped = $state<boolean>(false);
+	let quality = $state<number>(100);
+	let isGenerating = $state<boolean>(false);
+
+	// 3. Robust binary parser to extract EXIF orientation (Bypasses browser decoder failures)
+	async function getExifOrientation(file: File): Promise<number> {
+		return new Promise((resolve) => {
+			const reader = new FileReader();
+			reader.onload = function(e: ProgressEvent<FileReader>) {
+				const buffer = e.target?.result as ArrayBuffer;
+				if (!buffer) return resolve(1);
+
+				const view = new DataView(buffer);
+				if (view.getUint16(0, false) !== 0xFFD8) return resolve(1); // Not a valid JPEG
+
+				const length = view.byteLength;
+				let offset = 2;
+
+				while (offset < length) {
+					const marker = view.getUint16(offset, false);
+
+					// Stop searching if we hit the actual image data (Start of Scan)
+					if (marker === 0xFFDA || (marker & 0xFF00) !== 0xFF00) {
+						break;
+					}
+
+					// If it's an APP1 Marker (0xFFE1)
+					if (marker === 0xFFE1) {
+						const segmentLength = view.getUint16(offset + 2, false);
+
+						// Check if the identifier inside this APP1 block is "Exif\0\0"
+						if (view.getUint32(offset + 4, false) === 0x45786966) {
+							const tiffStart = offset + 10;
+							const littleEndian = view.getUint16(tiffStart, false) === 0x4949;
+							const ifd0Offset = view.getUint32(tiffStart + 4, littleEndian);
+							const tagsCount = view.getUint16(tiffStart + ifd0Offset, littleEndian);
+							const tagsStart = tiffStart + ifd0Offset + 2;
+
+							// Loop through the tags to find Orientation (0x0112)
+							for (let i = 0; i < tagsCount; i++) {
+								const tagId = view.getUint16(tagsStart + (i * 12), littleEndian);
+								if (tagId === 0x0112) {
+									return resolve(view.getUint16(tagsStart + (i * 12) + 8, littleEndian));
+								}
+							}
+							return resolve(1); // Found EXIF but no orientation tag
+						}
+
+						// It was an APP1 block, but NOT Exif (likely Ultra HDR/XMP data).
+						// Safely skip the entire block and keep looking.
+						offset += segmentLength + 2;
+					} else {
+						// For all other markers (APP0, APP2, etc.), skip over them.
+						// FIX: Explicitly add the 2 bytes for the marker itself so we don't misalign!
+						offset += view.getUint16(offset + 2, false) + 2;
+					}
+				}
+				return resolve(1); // Default to normal orientation if nothing is found
+			};
+
+			// Read the first 128KB to safely bypass large HDR blocks and find EXIF
+			reader.readAsArrayBuffer(file.slice(0, 131072));
+		});
+	}
+
+	// 4. File upload handler with explicit Event typing
+	async function handleImageUpload(event: Event, side: 'left' | 'right'): Promise<void> {
+		const input = event.target as HTMLInputElement;
+		const file = input.files?.[0];
 		if (!file) return;
 
 		try {
-			// createImageBitmap processes the raw file and explicitly applies EXIF orientation
-			const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+			// Extract the EXIF tag manually
+			const orientation = await getExifOrientation(file);
+
+			// Force the browser to leave the raw pixels alone
+			const bitmap = await createImageBitmap(file, { imageOrientation: 'none' });
+
+			// Swap width and height if the image is rotated 90 degrees
+			const isRotated = orientation === 6 || orientation === 8;
+			const actualWidth = isRotated ? bitmap.height : bitmap.width;
+			const actualHeight = isRotated ? bitmap.width : bitmap.height;
+
+			const processedData: ProcessedImage = {
+				bitmap,
+				orientation,
+				actualWidth,
+				actualHeight
+			};
 
 			if (side === 'left') {
-				leftImage = bitmap;
+				leftImage = processedData;
 			} else {
-				rightImage = bitmap;
+				rightImage = processedData;
 			}
 		} catch (error) {
 			console.error("Error processing image orientation:", error);
@@ -29,51 +113,74 @@
 		}
 	}
 
+	// 5. Canvas drawing logic that mathematically handles rotation
+	function drawOrientedImage(
+		ctx: CanvasRenderingContext2D,
+		img: ProcessedImage,
+		x: number,
+		y: number
+	): void {
+		ctx.save();
+		const { bitmap, orientation, actualWidth, actualHeight } = img;
+
+		// Apply translations and rotations based on EXIF data
+		if (orientation === 6) { // 90° Clockwise
+			ctx.translate(x + actualWidth, y);
+			ctx.rotate(90 * Math.PI / 180);
+			ctx.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height);
+		} else if (orientation === 8) { // 90° Counter-Clockwise
+			ctx.translate(x, y + actualHeight);
+			ctx.rotate(-90 * Math.PI / 180);
+			ctx.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height);
+		} else if (orientation === 3) { // 180° Upside Down
+			ctx.translate(x + actualWidth, y + actualHeight);
+			ctx.rotate(180 * Math.PI / 180);
+			ctx.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height);
+		} else { // Normal
+			ctx.drawImage(bitmap, x, y, bitmap.width, bitmap.height);
+		}
+
+		ctx.restore();
+	}
+
+	// 6. Reactive drawing effect
 	$effect(() => {
 		if (leftImage && rightImage && canvas) {
 			const ctx = canvas.getContext('2d');
+			if (!ctx) return;
 
-			// Determine which image goes on which side
 			const img1 = isSwapped ? rightImage : leftImage;
 			const img2 = isSwapped ? leftImage : rightImage;
 
-			// FIX: ImageBitmap uses .width and .height, NOT .naturalWidth
-			const width1 = img1.width;
-			const height1 = img1.height;
-			const width2 = img2.width;
-			const height2 = img2.height;
+			// Use our calculated actual dimensions
+			canvas.width = img1.actualWidth + img2.actualWidth;
+			canvas.height = Math.max(img1.actualHeight, img2.actualHeight);
 
-			// The final image width is the sum of both; the height is the max of the two
-			canvas.width = width1 + width2;
-			canvas.height = Math.max(height1, height2);
-
-			// Clear and draw
 			ctx.clearRect(0, 0, canvas.width, canvas.height);
-			ctx.drawImage(img1, 0, 0);
-			ctx.drawImage(img2, width1, 0);
+
+			// Draw left image, then right image offset by the first image's actual width
+			drawOrientedImage(ctx, img1, 0, 0);
+			drawOrientedImage(ctx, img2, img1.actualWidth, 0);
 		}
 	});
 
-	// Export the canvas natively without auto-downloading until clicked
-	function downloadImage() {
+	// 7. Explicitly typed export function
+	function downloadImage(): void {
 		if (!canvas) return;
 		isGenerating = true;
 
-		// Use toBlob instead of toDataURL to prevent crashing on massive native-resolution files
-		canvas.toBlob((blob) => {
+		canvas.toBlob((blob: Blob | null) => {
 			if (!blob) {
 				alert("Failed to process image.");
 				isGenerating = false;
 				return;
 			}
 
-			// Create a temporary link to trigger the manual download
 			const link = document.createElement('a');
-			link.download = `JointPics-WebP-${Date.now()}.webp`;
+			link.download = `DoubleVision-WebP-${Date.now()}.webp`;
 			link.href = URL.createObjectURL(blob);
 			link.click();
 
-			// Cleanup to free up memory
 			URL.revokeObjectURL(link.href);
 			isGenerating = false;
 		}, 'image/webp', quality / 100);
