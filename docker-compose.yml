@@ -1,0 +1,7 @@
+services:
+  doublevision:
+    build: .
+    container_name: doublevision
+    restart: unless-stopped
+    ports:
+      - "8080:80"
