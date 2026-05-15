@@ -102,6 +102,12 @@
 				actualHeight
 			};
 
+			if (side === 'left' && leftImage?.bitmap) {
+				leftImage.bitmap.close();
+			} else if (side === 'right' && rightImage?.bitmap) {
+				rightImage.bitmap.close();
+			}
+
 			if (side === 'left') {
 				leftImage = processedData;
 			} else {
